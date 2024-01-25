@@ -6,7 +6,9 @@ import socket
 GOOGLE_IP = "198.41.0.4"
 GOOGLE_PORT = 53
 
+currOctet = 0
 references = {}
+servers = []
 
 class DNSMessage:
     def __init__(self,header,question) -> None:
@@ -57,6 +59,7 @@ def parseHeader(resp):
     return responseHeader
 
 def parseQuestion(header,data):
+    global currOctet
     respQuestion = Question(0,0,0)
     domainName = parseDomainName(data,0)
     respQuestion.qname = domainName.get("domainName")
@@ -70,7 +73,7 @@ def parseQuestion(header,data):
         else:
             values.append(int(data[start:start+4],16))
         start+=4
-
+    currOctet+=4
     idx = 0
     for key in respQuestion.__dict__.keys():
         if(idx==0):
@@ -85,37 +88,78 @@ def parseQuestion(header,data):
     parseRR((data)[start:])
 
 def parseDomainName(data,start):
+    global servers
+    global currOctet
     initial = start
     start = start
     domainName = ""
     length = 0
+    currDomainPart = ""
+    startingOctect = currOctet
     while start<len(data):
-        curr = data[start:start+2]
+        curr = data[start:start+4]
         if(HexToBinary(curr)[0:2]=="11"):
-            print("here>>>>>> ",start)
+            print(currOctet)
+            referenceAddress = int(HexToBinary(curr)[3:],2) + 1
+            print(referenceAddress,">>>>>>>>>>>")
+            domainName+=f".{references[referenceAddress]}"
+            servers.append(domainName)
+            idx = len(domainName) - 1 - len(f".{references[referenceAddress]}")
+            totalLength = len(domainName) - len(f".{references[referenceAddress]}")
+            while idx>=0:
+                if(domainName[idx]=="."):
+                    references[currOctet-(totalLength-idx-1)]=domainName[idx+1:]
+                idx-=1
+            references[currOctet-(totalLength)] = domainName
+            print(references)
+            currOctet+=2
             start+=4
             break
         # print(data[start:start+2])
         if(data[start:start+2]=="00"):
+            servers.append(domainName)
+            idx = len(domainName) - 1
+            totalLength = len(domainName)
+            while idx>=0:
+                if(domainName[idx]=="."):
+                    references[currOctet-(totalLength-idx-1)]=domainName[idx+1:]
+                idx-=1
+            references[currOctet-(totalLength-1)] = domainName
+            print(references)
             start+=2
+            currOctet+=1
             break
         if(length==0):
+            # two cases
+            # case1: I am at the start of the domain name so the currDomainPart would be empty so do nothing
+            # case2: I have parsed a part of domain name so put it into map and refersh the variables
+            if len(currDomainPart)!=0:
+                references[startingOctect] = currDomainPart
+                startingOctect = currOctet+1
+                currDomainPart = ""
             if(start!=initial):
                 domainName+="."
             length=int(data[start:start+2],16)
         else:
             domainName+=chr(int(data[start:start+2],16))
+            currDomainPart+=chr(int(data[start:start+2],16))
             length-=1
         start+=2
+        currOctet+=1
     print("diff ", start - initial)
+    
     return {"domainName":domainName,"start":start}
         
 
 def parseRR(data):
+    global currOctet
+    global servers
     start = 0
     name = data[start:start+4]
     print(name,"name")
     start = start+4
+    currOctet+=2
+
     type = int(data[start:start+4],16)
     print(type," RR type")
     start+=4
@@ -130,6 +174,7 @@ def parseRR(data):
     print(rdlength," octets")
     start+=4
 
+    currOctet+=10
     if(type==1):
         idx = 0
         ip = ""
@@ -141,12 +186,22 @@ def parseRR(data):
             start+=2
         print(ip," ip")
         GOOGLE_IP = ip
-        resp = sock.sendto(message,(GOOGLE_IP,GOOGLE_PORT))
-        print("contacted ",ip)
+        currOctet = 0
+        # servers = []
+        print(servers,".................")
+        servers = []
+        global message
+        if responseHeader.ancount==0:
+            resp = sock.sendto(message,(GOOGLE_IP,GOOGLE_PORT))
+            print("contacted ",ip)
         return
     if(type==2):   
         domainName = parseDomainName(data,start)
-        print(domainName.get("domainName"))
+        # message2 = getMessage(domainName.get("domainName"))
+        # GOOGLE_IP = "198.41.0.4"
+        # message2 = bytes.fromhex(message2)
+        # resp = sock.sendto(message2,(GOOGLE_IP,GOOGLE_PORT))
+        print("contacted ",domainName.get("domainName"))
         # start = domainName.get("start")
     
 
@@ -173,6 +228,17 @@ def HexToBinary(resp):
         binary += hex_dict[digit]
     return binary
 
+def getURL(url):
+    result = ""
+    strs = list(url.split("."))
+    for parts in strs:
+        result+=str(len(parts))
+        result+=parts
+    result+="0"
+    print(result)
+    return result
+
+
 def binary_to_hex(binary_string):
     """
     Convert a binary string to a hex string.
@@ -191,16 +257,17 @@ def binary_to_hex(binary_string):
     
     return hex_string
 
-def getMessage():
+def getMessage(url):
     header1 = Header(22,0,0,0,0,1,0,0,1,0,0,0)
-    question = Question("3www6notion2so0",1,1)
+    url = getURL(url)
+    question = Question(url,1,1)
     hexString = ""
     binaryString=""
     for item in header1.__dict__.items():
         binaryString+=convertToBits(item[1][0],item[1][1])
     
     hexString+=binary_to_hex(binaryString)
-    print("hexstring", hexString)
+    
     binaryString = ""
     
     for item in question.__dict__.items():
@@ -210,15 +277,15 @@ def getMessage():
             for idx in range(len(item[1])):
                 if item[1][idx].isalpha()==False:
                     binaryString=convertToBits(int(item[1][idx]),8)
-                    print(item[1][idx]," ",binary_to_hex(binaryString))
+                   
                     hexString+=(binary_to_hex(binaryString))+domainName
                 else:
                     binaryString=format(ord(item[1][idx]),'08b')
-                    print(item[1][idx]," ",binary_to_hex(binaryString))
+                   
                     hexString+=binary_to_hex(binaryString)
         else:
             binaryString=convertToBits(item[1],16)
-            print(item," ",binary_to_hex(binaryString))
+            
             hexString+=binary_to_hex(binaryString)
 
     return hexString
@@ -230,7 +297,7 @@ sock = socket.socket(socket.AF_INET, # Internet
                      socket.SOCK_DGRAM) # UDP
 
 
-message = getMessage()
+message = getMessage("dns.google.com")
 print(message)
 
 message = bytes.fromhex(message)
@@ -241,4 +308,6 @@ while True:
     print(data)
     header = HexToBinary(bytes.hex(data))
     responseHeader = parseHeader(header)
+    # header has 12 octects
+    currOctet+=12
     parseQuestion(responseHeader,bytes.hex(data)[24:])
