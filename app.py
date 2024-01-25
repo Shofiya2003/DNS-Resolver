@@ -1,10 +1,12 @@
 
+import binascii
 import codecs
 import socket
 
-GOOGLE_IP = "8.8.8.8"
+GOOGLE_IP = "198.41.0.4"
 GOOGLE_PORT = 53
 
+references = {}
 
 class DNSMessage:
     def __init__(self,header,question) -> None:
@@ -12,9 +14,6 @@ class DNSMessage:
         self.question = question
 
 class Header:
-    # def __init__(self) -> None:
-    #     self.id = 0
-    
     def __init__(self,id,qr,opcode,aa,tc,rd,ra,rcode,qdcount,ancount,nscount,arcount) -> None:
         self.id = [id,16]
         self.qr = [qr,1]
@@ -49,31 +48,19 @@ def parseHeader(resp):
     for key in responseHeader.__dict__.keys():
         setattr(responseHeader,key,values[idx])
         idx+=1
+    if(responseHeader.ancount>=1):
+        print("resolved the address")
+    print(responseHeader.id,"id")
+    print(responseHeader.ancount,"ancount")
+    print(responseHeader.arcount,"arcount")
+    print(responseHeader.nscount,"nscount")
+    return responseHeader
 
-    print(responseHeader.id)
-
-
-def parseQuestion(data):
+def parseQuestion(header,data):
     respQuestion = Question(0,0,0)
-    start = 0
-    question = ""
-    length = 0
-    while start<len(data):
-        # print(data[start:start+2])
-        if(data[start:start+2]=="00"):
-            start+=2
-            break
-        if(length==0):
-            if(start!=0):
-                question+="."
-            length=int(data[start:start+2],16)
-        else:
-            question+=chr(int(data[start:start+2],16))
-            length-=1
-        start+=2
-        
-    respQuestion.qname = question
-
+    domainName = parseDomainName(data,0)
+    respQuestion.qname = domainName.get("domainName")
+    start = domainName.get("start")
     values = []
     print(data[start:start+8])
     for item in respQuestion.__dict__.items():
@@ -95,6 +82,80 @@ def parseQuestion(data):
     print(respQuestion.qname)
     print(respQuestion.qtype)
     print(respQuestion.qclass)
+    parseRR((data)[start:])
+
+def parseDomainName(data,start):
+    initial = start
+    start = start
+    domainName = ""
+    length = 0
+    while start<len(data):
+        curr = data[start:start+2]
+        if(HexToBinary(curr)[0:2]=="11"):
+            print("here>>>>>> ",start)
+            start+=4
+            break
+        # print(data[start:start+2])
+        if(data[start:start+2]=="00"):
+            start+=2
+            break
+        if(length==0):
+            if(start!=initial):
+                domainName+="."
+            length=int(data[start:start+2],16)
+        else:
+            domainName+=chr(int(data[start:start+2],16))
+            length-=1
+        start+=2
+    print("diff ", start - initial)
+    return {"domainName":domainName,"start":start}
+        
+
+def parseRR(data):
+    start = 0
+    name = data[start:start+4]
+    print(name,"name")
+    start = start+4
+    type = int(data[start:start+4],16)
+    print(type," RR type")
+    start+=4
+    classCode = int(data[start:start+4],16)
+    print(classCode," RR class code")
+    start+=4
+    ttl = int(data[start:start+8],16)
+    print(ttl," TTL")
+    start+=8
+    idx=0
+    rdlength = int(data[start:start+4],16)
+    print(rdlength," octets")
+    start+=4
+
+    if(type==1):
+        idx = 0
+        ip = ""
+        while idx<4:
+            ip+=str(int(data[start:start+2],16))
+            if(idx!=3):
+                ip+="."
+            idx+=1
+            start+=2
+        print(ip," ip")
+        GOOGLE_IP = ip
+        resp = sock.sendto(message,(GOOGLE_IP,GOOGLE_PORT))
+        print("contacted ",ip)
+        return
+    if(type==2):   
+        domainName = parseDomainName(data,start)
+        print(domainName.get("domainName"))
+        # start = domainName.get("start")
+    
+
+    if(len(data[start + (rdlength*2):])==0 or responseHeader.ancount==1):
+            return
+    else:
+        print(data[start + (rdlength*2):])
+        parseRR(data[start + (rdlength*2):])
+        return
 
 
 def convertToBits(number,numberOfBits):
@@ -112,25 +173,55 @@ def HexToBinary(resp):
         binary += hex_dict[digit]
     return binary
 
-def getMessage():
+def binary_to_hex(binary_string):
+    """
+    Convert a binary string to a hex string.
 
-    header1 = Header(22,1,0,0,0,1,0,0,1,0,0,0)
-    question = Question("3dns6google3com0",1,1)
-    binaryString = ""
+    Args:
+    - binary_string (str): Binary string to be converted.
+
+    Returns:
+    - str: Hexadecimal representation of the binary string.
+    """
+    # Convert binary string to bytes
+    binary_bytes = int(binary_string, 2).to_bytes((len(binary_string) + 7) // 8, byteorder='big')
+    
+    # Convert bytes to hex string
+    hex_string = binascii.hexlify(binary_bytes).decode('utf-8')
+    
+    return hex_string
+
+def getMessage():
+    header1 = Header(22,0,0,0,0,1,0,0,1,0,0,0)
+    question = Question("3www6notion2so0",1,1)
+    hexString = ""
+    binaryString=""
     for item in header1.__dict__.items():
         binaryString+=convertToBits(item[1][0],item[1][1])
-
+    
+    hexString+=binary_to_hex(binaryString)
+    print("hexstring", hexString)
+    binaryString = ""
     
     for item in question.__dict__.items():
-        
-        if item[0] == "qname":
-            
-            binaryString+=''.join(format(ord(i), '08b') for i in item[1]) 
-            
+        domainName = ""
+        if item[0] == "qname":  
+            start = 0
+            for idx in range(len(item[1])):
+                if item[1][idx].isalpha()==False:
+                    binaryString=convertToBits(int(item[1][idx]),8)
+                    print(item[1][idx]," ",binary_to_hex(binaryString))
+                    hexString+=(binary_to_hex(binaryString))+domainName
+                else:
+                    binaryString=format(ord(item[1][idx]),'08b')
+                    print(item[1][idx]," ",binary_to_hex(binaryString))
+                    hexString+=binary_to_hex(binaryString)
         else:
-            binaryString+=convertToBits(item[1],16)
+            binaryString=convertToBits(item[1],16)
+            print(item," ",binary_to_hex(binaryString))
+            hexString+=binary_to_hex(binaryString)
 
-    return hex(int(binaryString,2))
+    return hexString
 
 
 UDP_IP = "127.0.0.1"
@@ -140,20 +231,14 @@ sock = socket.socket(socket.AF_INET, # Internet
 
 
 message = getMessage()
+print(message)
 
-message = message[2:]
-message = "00"+message
-# fix the error in getMessage()
-
-message = bytes.fromhex("00160100000100000000000003646e7306676f6f676c6503636f6d0000010001")
-
+message = bytes.fromhex(message)
 resp = sock.sendto(message,(GOOGLE_IP,GOOGLE_PORT))
 print(resp)
 while True:
     data,addr = sock.recvfrom(2048)
-    print()
-    header = HexToBinary(bytes.hex(data[1:13]))
-    parseHeader(header)
-    parseQuestion(bytes.hex(data)[24:])
-    print(bytes.hex(data)[38:])
-
+    print(data)
+    header = HexToBinary(bytes.hex(data))
+    responseHeader = parseHeader(header)
+    parseQuestion(responseHeader,bytes.hex(data)[24:])
